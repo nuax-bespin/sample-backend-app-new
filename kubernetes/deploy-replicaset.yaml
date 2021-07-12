@@ -1,0 +1,120 @@
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: fluent-bit-backend-new-log-config
+data:
+  application-log.conf: |
+    [INPUT]
+        Name                tail
+        Tag                 application.*
+        Path                /data/logs/*
+        Parser              docker
+        DB                  /var/fluent-bit/state/flb_container.db
+        Mem_Buf_Limit       50MB
+        Skip_Long_Lines     On
+        Refresh_Interval    10
+        Rotate_Wait         30
+        storage.type        filesystem
+
+    [OUTPUT]
+        Name                cloudwatch_logs
+        Match               application.*
+        region              ap-northeast-2
+        log_group_name      /application/${CLUSTER_NAME}/${APP_NAME}
+        log_stream_prefix   ${HOSTNAME}-
+        auto_create_group   true
+---
+apiVersion: apps/v1
+kind: ReplicaSet
+metadata:
+  annotations:
+    strategy.spinnaker.io/max-version-history: '3'
+    traffic.spinnaker.io/load-balancers: '["service sample-api-app-service"]'
+  labels:
+    app: sample-api-app-new
+  name: sample-api-app-new
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: sample-api-app-new
+  template:
+    metadata:
+      labels:
+        app: sample-api-app-new
+    spec:
+      containers:
+        - name: sample-api-app-new
+          image: harbor.toolchain/sample-backend/sample-backend-app-new:${parameters.imageTag}
+          ports:
+            - containerPort: 8080
+          volumeMounts:
+            - name: log-storage
+              mountPath: /data/logs
+          resources:
+            requests:
+              memory: "128Mi"
+              cpu: "200m"
+            limits:
+              memory: "256Mi"
+              cpu: "500m"
+          livenessProbe:
+            failureThreshold: 3
+            httpGet:
+              path: /api/v2/news/
+              port: 8080
+              scheme: HTTP
+            initialDelaySeconds: 5
+            periodSeconds: 10
+            successThreshold: 1
+            timeoutSeconds: 5
+          readinessProbe:
+            failureThreshold: 3
+            httpGet:
+              path: /api/v2/news/
+              port: 8080
+              scheme: HTTP
+            periodSeconds: 10
+            successThreshold: 1
+            timeoutSeconds: 5
+        - name: log-collector
+          image: harbor.toolchain/tools/fluent-bit:1.7
+          env:
+            - name: CLUSTER_NAME
+              valueFrom:
+                configMapKeyRef:
+                  name: fluent-bit-config
+                  key: cluster.name
+            - name: APP_NAME
+              value: sample-api-app-new
+          volumeMounts:
+            - name: log-storage
+              readOnly: true
+              mountPath: /data/logs
+            - name: fluent-bit-config
+              mountPath: /fluent-bit/etc/fluent-bit.conf
+              subPath: fluent-bit.conf
+            - name: fluent-bit-log-config
+              mountPath: /fluent-bit/etc/application-log.conf
+              subPath: application-log.conf
+          resources:
+            requests:
+              memory: "128Mi"
+              cpu: "200m"
+            limits:
+              memory: "256Mi"
+              cpu: "500m"
+      nodeSelector:
+        eks.amazonaws.com/nodegroup: svcbasic-an2d-eks-backend-node
+      volumes:
+        - name: log-storage
+          emptyDir: { }
+        - name: fluent-bit-config
+          configMap:
+            name: fluent-bit-config
+        - name: fluent-bit-log-config
+          configMap:
+            name: fluent-bit-backend-new-log-config
+      imagePullSecrets:
+        - name: harbor

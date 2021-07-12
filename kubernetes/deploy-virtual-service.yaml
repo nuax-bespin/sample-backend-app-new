@@ -1,0 +1,18 @@
+apiVersion: networking.istio.io/v1alpha3
+kind: VirtualService
+metadata:
+  name: sample-api-app-new-vs
+spec:
+  gateways:
+    - dxservice-gw
+  hosts:
+    - backend.devapp.shop
+  http:
+    - match:
+        - uri:
+            prefix: /api/v2
+      route:
+        - destination:
+            host: sample-api-app-new-service
+            port:
+              number: 8080

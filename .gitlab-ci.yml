@@ -1,0 +1,60 @@
+image: docker:latest
+services:
+  - name: docker:18.09.7-dind
+    command: ["--insecure-registry=harbor.toolchain"]
+
+variables:
+  # https://gitlab.com/gitlab-org/gitlab-runner/-/issues/5408
+  DOCKER_HOST: tcp://localhost:2375
+  DOCKER_DRIVER: overlay2
+  DOCKER_TLS_CERTDIR: ""
+  SPRING_PROFILES_ACTIVE: dev
+  VARIABLES_FILE: ./variables.txt
+  MAVEN_OPTS: "-Dmaven.repo.local=$CI_PROJECT_DIR/.m2/repository"
+
+cache:
+  paths:
+    - .m2/repository
+
+stages:
+  - test
+  - build
+  - package
+  - deploy
+
+maven-test:
+  image: maven:3-jdk-8
+  stage: test
+  script:
+    - "mvn clean test -D$SPRING_PROFILES_ACTIVE"
+
+maven-build:
+  image: maven:3-jdk-8
+  stage: build
+  script:
+    - "mvn clean package -DskipTests -D$SPRING_PROFILES_ACTIVE"
+  artifacts:
+    paths:
+      - target/*.jar
+
+docker-build:
+  stage: package
+  script:
+    - TAG_VERSION="1.0.$(date '+%Y%m%d')-$CI_COMMIT_SHORT_SHA"
+    - echo "export TAG_VERSION=$TAG_VERSION" > $VARIABLES_FILE
+    - docker build -t $HARBOR_DOMAIN/sample-backend/sample-backend-app-new:$TAG_VERSION --build-arg SPRING_PROFILES_ACTIVE=$SPRING_PROFILES_ACTIVE -f docker/Dockerfile .
+    - echo "$HARBOR_PASSWORD" | docker login $HARBOR_DOMAIN -u $HARBOR_USERNAME --password-stdin
+    - docker push $HARBOR_DOMAIN/sample-backend/sample-backend-app-new:$TAG_VERSION
+  artifacts:
+    paths:
+      - $VARIABLES_FILE
+
+k8s-deploy:
+  image: curlimages/curl
+  stage: deploy
+  script:
+    - source $VARIABLES_FILE
+    - |
+      curl -vX POST https://$SPINNAKER_DOMAIN/api/webhooks/webhook/sample-backend-api-new \
+      --data "{\"status\": \"success\", \"secretKey\": \"$SPINNAKER_WEBHOOK_SECRET_KEY\", \"message\": \"I've got it\", \"parameters\": {\"imageTag\":\"$TAG_VERSION\"}}" \
+      --header "Content-Type: application/json"
